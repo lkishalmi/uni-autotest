@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project name="gf-install" default="usage" basedir=".">
+    
+    <property file="install.properties"/>
+    <property file="default.properties"/>
+    
+    <target name="init">
+        <macrodef name="asadmin">
+            <attribute name="cmd"/>
+            <attribute name="dir" default="${glassfish.home}"/>
+            <attribute name="failonerror" default="true"/>
+            <element name="asargs" implicit="true" optional="true"/>
+            <sequential>
+                <exec executable="${glassfish.home}/bin/asadmin" dir="@{dir}" failifexecutionfails="true" failonerror="@{failonerror}">
+                    <arg value="@{cmd}"/>
+                    <asargs/>
+                </exec>
+            </sequential>
+        </macrodef>
+        <macrodef name="ij">
+            <attribute name="connect" />
+            <attribute name="dir" default="."/>
+            <text name="script" trim="true"/>
+            <sequential>
+                <local name="script.file"/>
+                <tempfile property="script.file" createfile="true" prefix="run-" suffix=".sql"/>
+                <echo file="${script.file}">
+                    connect '@{connect}';
+                </echo>
+                <echo message="@{script}" file="${script.file}" append="true"/>
+                <echo file="${script.file}" append="true">
+                    exit;
+                </echo>
+                <exec executable="${glassfish.install}/javadb/bin/ij" dir="@{dir}" failifexecutionfails="true" failonerror="true">
+                    <arg file="${script.file}"/>
+                </exec>
+                <delete file="${script.file}" failonerror="true"/>
+            </sequential>
+        </macrodef>
+        <macrodef name="ij-script">
+            <attribute name="connect"/>
+            <element name="scripts" implicit="true"/>
+            <sequential>
+                <local name="new.script.file"/>
+                <tempfile property="new.script.file" createfile="true" suffix=".sql" prefix="temp-"/>
+                <concat destfile="${new.script.file}" encoding="UTF-8">
+                    <filterchain>
+                        <suffixlines suffix=";"/>
+                    </filterchain>
+                    <scripts/>
+                </concat>       
+                <ij connect="@{connect}">
+                    run '${new.script.file}';
+                </ij>
+                <delete file="${new.script.file}" failonerror="true"/>
+            </sequential>
+        </macrodef>
+    </target>
+    
+    <target name="-check-install">
+        <available property="has.domain" file="${glassfish.domaindir}/${domain.name}" type="dir"/>
+        <condition property="running.domain">
+            <socket port="4848" server="localhost"/>
+        </condition>
+    </target>
+    
+    <target name="-check-db">
+        <condition property="running.javadb">
+            <socket port="${db.port}" server="${db.host}"/>
+        </condition>        
+    </target>
+    
+    <target name="create-domain" depends="init, -check-install" unless="has.domain">
+        <asadmin cmd="create-domain">
+            <arg value="--domaindir=${glassfish.domaindir}"/>
+            <arg value="--nopassword=true"/>
+            <arg value="${domain.name}"/>
+        </asadmin>
+    </target>
+    
+    <target name="start-domain" depends="create-domain" unless="running.domain">
+        <asadmin cmd="start-domain">
+            <arg value="--domaindir=${glassfish.domaindir}"/>
+            <arg value="${domain.name}"/>
+        </asadmin>
+    </target>
+    
+    <target name="stop-domain" depends="init, -check-install" if="running.domain">
+        <asadmin cmd="stop-domain">
+            <arg value="${domain.name}"/>
+        </asadmin>
+    </target>
+    
+    <target name="start-database" depends="init, -check-db" unless="running.javadb">
+        <copy todir="${glassfish.install}/javadb" overwrite="true">
+            <fileset dir="." includes="javadb.policy"/>
+        </copy>
+        <asadmin cmd="start-database">
+        </asadmin>        
+    </target>
+
+    <target name="create-database" depends="start-database">
+        <ij-script connect="${db.connect}">
+            <filelist dir="sql">
+                <file name="create-issues-db.sql"/>
+                <file name="create-admin-user.sql"/>
+            </filelist>
+        </ij-script>
+    </target>
+        
+    <target name="drop-database" depends="start-database">
+        <ij-script connect="${db.connect}">
+            <filelist dir="sql">
+                <file name="drop-issues-db.sql"/>
+            </filelist>
+        </ij-script>
+    </target>
+    <target name="recreate-database" depends="drop-database, create-database"/>
+
+    <target name="stop-database" depends="init, -check-db" if="running.javadb">
+        <asadmin cmd="stop-database"/>        
+    </target>
+    
+    <target name="delete-database" depends="stop-database">
+        <delete dir="${glassfish.install}/glassfish/databases/${db.name}" failonerror="false"/>
+    </target>
+    
+    <target name="delete-domain" depends="stop-domain">
+        <asadmin cmd="delete-domain">
+            <arg value="--domaindir=${glassfish.domaindir}"/>
+            <arg value="${domain.name}"/>
+        </asadmin>
+    </target>
+
+    <target name="configure-domain" depends="start-domain">
+        <asadmin cmd="create-jdbc-connection-pool">
+            <arg value="--datasourceclassname"/>
+            <arg value="org.apache.derby.jdbc.ClientConnectionPoolDataSource"/>
+            <arg value="--restype"/>
+            <arg value="javax.sql.DataSource"/>
+            <arg value="--property"/>
+            <arg value="${pool.properties}"/>
+            <arg value="UsersPool"/>
+        </asadmin>
+        <asadmin cmd="create-jdbc-resource">
+            <arg value="--connectionpoolid=UsersPool"/>
+            <arg value="jdbc/app-users"/>
+        </asadmin>
+        <asadmin cmd="create-auth-realm">
+            <arg value="--classname"/>
+            <arg value="com.sun.enterprise.security.auth.realm.jdbc.JDBCRealm"/>
+            <arg value="--property"/>
+            <arg value="${realm.properties}"/>
+            <arg value="users-realm"/>
+        </asadmin>
+        <asadmin cmd="create-javamail-resource">
+            <arg value="--mailhost"/>
+            <arg value="${mail.host}"/>
+            <arg value="--mailuser"/>
+            <arg value="${mail.user}"/>
+            <arg value="--fromaddress"/>
+            <arg value="${mail.user}"/>
+            <arg value="--property"/>
+            <arg value="${mail.properties}"/>
+            <arg value="mail/app-users"/>
+        </asadmin>
+    </target>
+    
+    <target name="unconfigure-domain" depends="start-domain">
+        <asadmin cmd="delete-javamail-resource" failonerror="false">
+            <arg value="mail/app-users"/>
+        </asadmin>
+        <asadmin cmd="delete-auth-realm" failonerror="false">
+            <arg value="users-realm"/>
+        </asadmin>
+        <asadmin cmd="delete-jdbc-resource" failonerror="false">
+            <arg value="jdbc/app-users"/>
+        </asadmin>        
+        <asadmin cmd="delete-jdbc-connection-pool" failonerror="false">
+            <arg value="UsersPool"/>
+        </asadmin>
+    </target>
+    
+    <target name="reconfigure-domain" depends="unconfigure-domain, configure-domain"/>
+    
+    <target name="usage">
+        
+    </target>
+    
+    
+</project>
